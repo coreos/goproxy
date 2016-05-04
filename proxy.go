@@ -89,7 +89,7 @@ func removeProxyHeaders(ctx *ProxyCtx, r *http.Request) {
 	//   The Connection general-header field allows the sender to specify
 	//   options that are desired for that particular connection and MUST NOT
 	//   be communicated by proxies over further connections.
-	r.Header.Del("Connection")
+	//r.Header.Del("Connection")
 }
 
 // Standard net/http function. Shouldn't be used directly, http.Serve will use it.

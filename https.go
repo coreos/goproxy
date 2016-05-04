@@ -162,19 +162,50 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 				ctx.Warnf("Cannot handshake client %v %v", r.Host, err)
 				return
 			}
-			defer rawClientTls.Close()
+			//defer rawClientTls.Close()
 			clientTlsReader := bufio.NewReader(rawClientTls)
+			isWebSocket := false
+
 			for !isEof(clientTlsReader) {
 				req, err := http.ReadRequest(clientTlsReader)
 				if err != nil && err != io.EOF {
-					return
+
+					if isWebSocket {
+						ctx.Logf("Handling websocket")
+						targetSiteCon, err := proxy.connectDial("tcp", host)
+						if err != nil {
+							httpError(proxyClient, ctx, err)
+							ctx.Warnf("Error dialing websocket backend %s: %v", host, err)
+							return
+						}
+						ctx.Logf("MITM websocket connection to %s", host)
+						cp := func(ctx *ProxyCtx, w, r net.Conn) {
+							connOk := true
+							if _, err := io.Copy(w, r); err != nil {
+								connOk = false
+								ctx.Warnf("Error copying to client: %s", err)
+							}
+							if !connOk {
+								ctx.Warnf("Bad connection: %s", err)
+							}
+						}
+						go cp(ctx, rawClientTls, targetSiteCon)
+						go cp(ctx, targetSiteCon, rawClientTls)
+						return
+					} else {
+						return
+					}
 				}
 				if err != nil {
 					ctx.Warnf("Cannot read TLS request from mitm'd client %v %v", r.Host, err)
 					return
 				}
+				if isWebSocketRequest(req) {
+					isWebSocket = true
+				}
 				req.RemoteAddr = r.RemoteAddr // since we're converting the request, need to carry over the original connecting IP as well
 				ctx.Logf("req %v", r.Host)
+				ctx.Logf("req %v", req)
 				req.URL, err = url.Parse("https://" + r.Host + req.URL.String())
 
 				// Bug fix which goproxy fails to provide request
