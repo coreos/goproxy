@@ -16,18 +16,6 @@ import (
 var upgrader = websocket.Upgrader{} // use default options
 
 func echo(w http.ResponseWriter, r *http.Request) {
-	connect := false
-	if r.Method == "CONNECT" {
-		connect = true
-		w.WriteHeader(200)
-		return
-	}
-
-	if !connect {
-		http.Error(w, "connect not recieved", 405)
-		return
-	}
-
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
@@ -54,7 +42,7 @@ func StartEchoServer(wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		http.HandleFunc("/", echo)
-		err := http.ListenAndServe(":12345", nil)
+		err := http.ListenAndServeTLS(":12345", "localhost.pem", "localhost-key.pem", nil)
 		if err != nil {
 			panic("ListenAndServe: " + err.Error())
 		}
@@ -85,12 +73,9 @@ func main() {
 	StartEchoServer(wg)
 	StartProxy(wg)
 
-	//origin := "http://localhost"
-	//endpointUrl := "wss://echo.websocket.org:443"
-	proxyUrl := "https://localhost:54321"
+	endpointUrl := "wss://localhost:12345"
+	proxyUrl := "wss://localhost:54321"
 
-	u := url.URL{Scheme: "wss", Host: "echo.websocket.org", Path: ""}
-	log.Printf("connecting to %s", u.String())
 	surl, _ := url.Parse(proxyUrl)
 	dialer := websocket.Dialer{
 		Subprotocols:    []string{"p1"},
@@ -98,7 +83,7 @@ func main() {
 		Proxy:           http.ProxyURL(surl),
 	}
 
-	c, _, err := dialer.Dial(u.String(), nil)
+	c, _, err := dialer.Dial(endpointUrl, nil)
 	if err != nil {
 		log.Fatal("dial:", err)
 	}

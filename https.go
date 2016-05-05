@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"errors"
+	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
 	"net"
@@ -60,18 +61,41 @@ func (proxy *ProxyHttpServer) connectDial(network, addr string) (c net.Conn, err
 	return proxy.ConnectDial(network, addr)
 }
 
-func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request) {
-	ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&proxy.sess, 1), proxy: proxy}
+// Acts like a normal ResponseWriter, but repeated calls to
+// Hijack() are a noop. This allows the ResponseWriter to be
+// passed to functions that assume they can hijack, as in a
+// websocket upgrade request.
+type HijackOnceResponseWriter struct {
+	http.ResponseWriter
+	conn net.Conn
+	rw   *bufio.ReadWriter
+}
 
+func (w HijackOnceResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.rw, nil
+}
+
+func NewHijackOnceResponseWriter(w http.ResponseWriter) HijackOnceResponseWriter {
 	hij, ok := w.(http.Hijacker)
 	if !ok {
 		panic("httpserver does not support hijacking")
 	}
 
-	proxyClient, _, e := hij.Hijack()
+	proxyClient, rw, e := hij.Hijack()
 	if e != nil {
 		panic("Cannot hijack connection " + e.Error())
 	}
+	return HijackOnceResponseWriter{
+		w,
+		proxyClient,
+		rw,
+	}
+}
+
+func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request) {
+	ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&proxy.sess, 1), proxy: proxy}
+	hij := NewHijackOnceResponseWriter(w)
+	proxyClient, _, _ := hij.Hijack()
 
 	ctx.Logf("Running %d CONNECT handlers", len(proxy.httpsHandlers))
 	todo, host := OkConnect, r.URL.Host
@@ -162,50 +186,17 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 				ctx.Warnf("Cannot handshake client %v %v", r.Host, err)
 				return
 			}
-			//defer rawClientTls.Close()
+			defer rawClientTls.Close()
 			clientTlsReader := bufio.NewReader(rawClientTls)
-			isWebSocket := false
 
 			for !isEof(clientTlsReader) {
 				req, err := http.ReadRequest(clientTlsReader)
 				if err != nil && err != io.EOF {
-
-					if isWebSocket {
-						ctx.Logf("Handling websocket")
-						targetSiteCon, err := proxy.connectDial("tcp", host)
-						if err != nil {
-							httpError(proxyClient, ctx, err)
-							ctx.Warnf("Error dialing websocket backend %s: %v", host, err)
-							return
-						}
-						ctx.Logf("MITM websocket connection to %s", host)
-						cp := func(ctx *ProxyCtx, w, r net.Conn) {
-							connOk := true
-							if _, err := io.Copy(w, r); err != nil {
-								connOk = false
-								ctx.Warnf("Error copying to client: %s", err)
-							}
-							if !connOk {
-								ctx.Warnf("Bad connection: %s", err)
-							}
-						}
-						go cp(ctx, rawClientTls, targetSiteCon)
-						go cp(ctx, targetSiteCon, rawClientTls)
-						return
-					} else {
-						return
-					}
-				}
-				if err != nil {
 					ctx.Warnf("Cannot read TLS request from mitm'd client %v %v", r.Host, err)
 					return
 				}
-				if isWebSocketRequest(req) {
-					isWebSocket = true
-				}
 				req.RemoteAddr = r.RemoteAddr // since we're converting the request, need to carry over the original connecting IP as well
 				ctx.Logf("req %v", r.Host)
-				ctx.Logf("req %v", req)
 				req.URL, err = url.Parse("https://" + r.Host + req.URL.String())
 
 				// Bug fix which goproxy fails to provide request
@@ -225,6 +216,12 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 						return
 					}
 					ctx.Logf("resp %v", resp.Status)
+				}
+
+				if websocket.IsWebSocketUpgrade(req) {
+					ctx.Logf("Request looks like websocket upgrade.")
+					hij.conn = rawClientTls
+					proxy.handleWebsocket(ctx, tlsConfig, hij, req)
 				}
 				resp = proxy.filterResponse(resp, ctx)
 				text := resp.Status
