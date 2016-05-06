@@ -9,23 +9,20 @@ import (
 	"strings"
 )
 
-func isWebSocketRequest(r *http.Request) bool {
-	contains := func(key, val string) bool {
-		vv := strings.Split(r.Header.Get(key), ",")
-		for _, v := range vv {
-			if val == strings.ToLower(strings.TrimSpace(v)) {
+func headerContains(header http.Header, name string, value string) bool {
+	for _, v := range header[name] {
+		for _, s := range strings.Split(v, ",") {
+			if strings.EqualFold(value, strings.TrimSpace(s)) {
 				return true
 			}
 		}
-		return false
 	}
-	if !contains("Connection", "upgrade") {
-		return false
-	}
-	if !contains("Upgrade", "websocket") {
-		return false
-	}
-	return true
+	return false
+}
+
+func isWebSocketRequest(r *http.Request) bool {
+	return headerContains(r.Header, "Connection", "upgrade") &&
+		headerContains(r.Header, "Upgrade", "websocket")
 }
 
 func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Config, w http.ResponseWriter, req *http.Request, clientCon *tls.Conn) {
