@@ -1,6 +1,7 @@
 package goproxy
 
 import (
+	"bufio"
 	"crypto/tls"
 	"github.com/gorilla/websocket"
 	"io"
@@ -14,39 +15,36 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 		WriteBufferSize: 1024,
 	}
 
-	//TODO: pull protocols etc from headers into dialer?
-	dialer := websocket.Dialer{
-		TLSClientConfig: tlsConfig,
-	}
-	requestHeader := http.Header{}
-	if origin := req.Header.Get("Origin"); origin != "" {
-		requestHeader.Add("Origin", origin)
-	}
-	for _, prot := range req.Header[http.CanonicalHeaderKey("Sec-WebSocket-Protocol")] {
-		requestHeader.Add("Sec-WebSocket-Protocol", prot)
-	}
-	for _, cookie := range req.Header[http.CanonicalHeaderKey("Cookie")] {
-		requestHeader.Add("Cookie", cookie)
-	}
-
 	targetURL := url.URL{Scheme: "wss", Host: req.URL.Host, Path: req.URL.Path}
-	targetCon, resp, err := dialer.Dial(targetURL.String(), requestHeader)
 
+	req, resp := proxy.filterRequest(req, ctx)
+	if resp != nil {
+		//TODO handle this
+	}
+	ctx.Logf("req: %v", req)
+
+	targetSiteCon, err := tls.Dial("tcp", targetURL.Host, defaultTLSConfig)
 	if err != nil {
-		ctx.Logf("Unable to dial target websocket: %s\n", err)
+		ctx.Logf("Error dialing target site: %v")
 		return
 	}
-	defer targetCon.Close()
+	defer targetSiteCon.Close()
 
-	upgradeHeader := http.Header{}
-	if header := resp.Header.Get("Sec-Websocket-Protocol"); header != "" {
-		upgradeHeader.Set("Sec-Websocket-Protocol", header)
-	}
-	if header := resp.Header.Get("Set-Cookie"); header != "" {
-		upgradeHeader.Set("Set-Cookie", header)
+	err = req.Write(targetSiteCon)
+	if err != nil {
+		ctx.Logf("Error writing request: %v", err)
+		return
 	}
 
-	clientCon, err := upgrader.Upgrade(w, req, nil)
+	targetTlsReader := bufio.NewReader(targetSiteCon)
+	resp, err = http.ReadResponse(targetTlsReader, req)
+	if err != nil && err != io.EOF {
+		ctx.Warnf("Cannot read TLS resp from mitm'd client %v %v", targetURL.Host, err)
+		return
+	}
+
+	ctx.Logf("resp: %v", resp)
+	clientCon, err := upgrader.Upgrade(w, req, resp.Header)
 	if err != nil {
 		ctx.Warnf("Couldn't upgrade client connection:  %s\n", err)
 		return
@@ -60,7 +58,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 		errChan <- err
 	}
 
-	go cp(targetCon.UnderlyingConn(), clientCon.UnderlyingConn())
-	go cp(clientCon.UnderlyingConn(), targetCon.UnderlyingConn())
+	go cp(targetSiteCon, clientCon.UnderlyingConn())
+	go cp(clientCon.UnderlyingConn(), targetSiteCon)
 	<-errChan
 }

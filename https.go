@@ -222,6 +222,7 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 					ctx.Logf("Request looks like websocket upgrade.")
 					hij.conn = rawClientTls
 					proxy.handleWebsocket(ctx, tlsConfig, hij, req)
+					return
 				}
 				resp = proxy.filterResponse(resp, ctx)
 				text := resp.Status
