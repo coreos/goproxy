@@ -28,7 +28,7 @@ func isWebSocketRequest(r *http.Request) bool {
 	return true
 }
 
-func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Config, w http.ResponseWriter, req *http.Request) {
+func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Config, w http.ResponseWriter, req *http.Request, clientCon *tls.Conn) {
 	// Assuming wss since we got here from a CONNECT
 	targetURL := url.URL{Scheme: "wss", Host: req.URL.Host, Path: req.URL.Path}
 
@@ -38,7 +38,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 		//TODO handle this
 	}
 
-	targetSiteCon, err := tls.Dial("tcp", targetURL.Host, defaultTLSConfig)
+	targetSiteCon, err := tls.Dial("tcp", targetURL.Host, tlsConfig)
 	if err != nil {
 		ctx.Logf("Error dialing target site: %v")
 		return
@@ -64,10 +64,6 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 	// Run response through handlers
 	resp = proxy.filterResponse(resp, ctx)
 
-	// Can safely ignore ok, connection already hijacked
-	hij, _ := w.(http.Hijacker)
-	clientCon, _, _ := hij.Hijack()
-
 	// Proxy handshake back to client
 	err = resp.Write(clientCon)
 	if err != nil {
@@ -78,7 +74,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 	errChan := make(chan error, 2)
 	cp := func(dst io.Writer, src io.Reader) {
 		_, err := io.Copy(dst, src)
-		ctx.Logf("err: %v", err)
+		ctx.Warnf("Websocket error: %v", err)
 		errChan <- err
 	}
 

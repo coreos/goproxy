@@ -60,41 +60,18 @@ func (proxy *ProxyHttpServer) connectDial(network, addr string) (c net.Conn, err
 	return proxy.ConnectDial(network, addr)
 }
 
-// Acts like a normal ResponseWriter, but repeated calls to
-// Hijack() are a noop. This allows the ResponseWriter to be
-// passed to functions that assume they can hijack, as in a
-// websocket upgrade request.
-type HijackOnceResponseWriter struct {
-	http.ResponseWriter
-	conn net.Conn
-	rw   *bufio.ReadWriter
-}
+func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request) {
+	ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&proxy.sess, 1), proxy: proxy}
 
-func (w HijackOnceResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return w.conn, w.rw, nil
-}
-
-func NewHijackOnceResponseWriter(w http.ResponseWriter) HijackOnceResponseWriter {
 	hij, ok := w.(http.Hijacker)
 	if !ok {
 		panic("httpserver does not support hijacking")
 	}
 
-	proxyClient, rw, e := hij.Hijack()
+	proxyClient, _, e := hij.Hijack()
 	if e != nil {
 		panic("Cannot hijack connection " + e.Error())
 	}
-	return HijackOnceResponseWriter{
-		w,
-		proxyClient,
-		rw,
-	}
-}
-
-func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request) {
-	ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&proxy.sess, 1), proxy: proxy}
-	hij := NewHijackOnceResponseWriter(w)
-	proxyClient, _, _ := hij.Hijack()
 
 	ctx.Logf("Running %d CONNECT handlers", len(proxy.httpsHandlers))
 	todo, host := OkConnect, r.URL.Host
@@ -205,8 +182,7 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 
 				if isWebSocketRequest(req) {
 					ctx.Logf("Request looks like websocket upgrade.")
-					hij.conn = rawClientTls
-					proxy.handleWebsocket(ctx, tlsConfig, hij, req)
+					proxy.handleWebsocket(ctx, tlsConfig, w, req, rawClientTls)
 					return
 				}
 
