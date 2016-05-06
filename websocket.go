@@ -40,7 +40,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 
 	targetSiteCon, err := tls.Dial("tcp", targetURL.Host, tlsConfig)
 	if err != nil {
-		ctx.Logf("Error dialing target site: %v")
+		ctx.Warnf("Error dialing target site: %v")
 		return
 	}
 	defer targetSiteCon.Close()
@@ -48,7 +48,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 	// write handshake request to target
 	err = req.Write(targetSiteCon)
 	if err != nil {
-		ctx.Logf("Error writing request: %v", err)
+		ctx.Warnf("Error writing upgrade request: %v", err)
 		return
 	}
 
@@ -56,8 +56,8 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 
 	// Read handshake response from target
 	resp, err = http.ReadResponse(targetTlsReader, req)
-	if err != nil && err != io.EOF {
-		ctx.Warnf("Cannot read TLS resp from mitm'd client %v %v", targetURL.Host, err)
+	if err != nil {
+		ctx.Warnf("Error reading handhsake response  %v", err)
 		return
 	}
 
@@ -67,7 +67,7 @@ func (proxy *ProxyHttpServer) handleWebsocket(ctx *ProxyCtx, tlsConfig *tls.Conf
 	// Proxy handshake back to client
 	err = resp.Write(clientCon)
 	if err != nil {
-		ctx.Logf("Error writing response: %v", err)
+		ctx.Warnf("Error writing handshake response: %v", err)
 		return
 	}
 
